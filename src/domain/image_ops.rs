@@ -43,6 +43,7 @@ pub struct ScanDebugResult {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RoiTemplateSet {
+    pub remaining_funds_roi: RelativeRoi,
     pub price_rois: [RelativeRoi; 6],
     pub name_rois: [RelativeRoi; 6],
     pub max_card_roi: RelativeRoi,
@@ -51,13 +52,14 @@ pub struct RoiTemplateSet {
 }
 
 pub const ROI_90: RoiTemplateSet = RoiTemplateSet {
+    remaining_funds_roi: (0.9381, 0.7481, 0.0240, 0.0342),
     price_rois: [
-        (0.9381, 0.7481, 0.0240, 0.0342),
         (0.8141, 0.7704, 0.0100, 0.0232),
         (0.6990, 0.7704, 0.0100, 0.0232),
         (0.5839, 0.7704, 0.0100, 0.0232),
         (0.4688, 0.7704, 0.0100, 0.0232),
         (0.3537, 0.7704, 0.0100, 0.0232),
+        (0.2386, 0.7704, 0.0100, 0.0232),
     ],
     name_rois: [
         (0.7807, 0.9556, 0.0818, 0.0250),
@@ -73,13 +75,14 @@ pub const ROI_90: RoiTemplateSet = RoiTemplateSet {
 };
 
 pub const ROI_100: RoiTemplateSet = RoiTemplateSet {
+    remaining_funds_roi: (0.9313, 0.7204, 0.0266, 0.0370),
     price_rois: [
-        (0.9313, 0.7204, 0.0266, 0.0370),
         (0.7927, 0.7444, 0.0120, 0.0269),
         (0.6650, 0.7444, 0.0120, 0.0269),
         (0.5373, 0.7444, 0.0120, 0.0269),
         (0.4095, 0.7444, 0.0120, 0.0269),
         (0.2818, 0.7444, 0.0120, 0.0269),
+        (0.1541, 0.7444, 0.0120, 0.0269),
     ],
     name_rois: [
         (0.7568, 0.9500, 0.0896, 0.0296),
@@ -146,7 +149,7 @@ pub fn preprocess_roi(image: &DynamicImage, is_number: bool) -> DynamicImage {
     }
 
     let bordered = add_white_border(&gray, 10);
-    DynamicImage::ImageLuma8(bordered)
+    DynamicImage::ImageRgb8(DynamicImage::ImageLuma8(bordered).to_rgb8())
 }
 
 pub fn mean_gray(image: &GrayImage) -> f32 {

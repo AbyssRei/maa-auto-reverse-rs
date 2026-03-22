@@ -198,6 +198,10 @@ impl AutoReverseEngine {
 
             let price_text = self.ocr_text(context, &price_crop, true)?;
             let name_text = self.ocr_text(context, &name_crop, false)?;
+            self.log(format!(
+                "扫描槽位{}: 价格OCR='{}' 名称OCR='{}'",
+                slot, price_text, name_text
+            ));
 
             if !name_text.trim().is_empty() {
                 let price = price_text.parse::<i32>().unwrap_or(-1);
@@ -221,13 +225,34 @@ impl AutoReverseEngine {
     }
 
     fn ocr_text(&self, context: &Context, roi: &DynamicImage, number_only: bool) -> Result<String> {
-        let preprocessed = preprocess_roi(roi, number_only);
-        let buffer = MaaImageBuffer::from_dynamic_image(&preprocessed)?;
-        let result = context
-            .run_recognition_direct("OCR", &json!({ "only_rec": true }).to_string(), &buffer)?
-            .and_then(|detail| ocr_text_from_detail(&detail, number_only));
+        let candidates = if number_only {
+            vec![preprocess_roi(roi, true), roi.clone()]
+        } else {
+            vec![roi.clone(), preprocess_roi(roi, false)]
+        };
 
-        Ok(result.unwrap_or_default())
+        for candidate in candidates {
+            let buffer = maa_buffer_from_bgr_image(&candidate)?;
+            let result = context
+                .run_recognition_direct(
+                    "OCR",
+                    &json!({
+                        "expected": [],
+                        "threshold": 0.0,
+                        "replace": [],
+                        "only_rec": true
+                    })
+                    .to_string(),
+                    &buffer,
+                )?
+                .and_then(|detail| ocr_text_from_detail(&detail, number_only));
+
+            if let Some(text) = result.filter(|text| !text.trim().is_empty()) {
+                return Ok(text);
+            }
+        }
+
+        Ok(String::new())
     }
 
     fn perform_buy_sell(
@@ -424,7 +449,26 @@ fn split_into_six(image: &DynamicImage) -> Vec<DynamicImage> {
 }
 
 fn ocr_text_from_detail(detail: &RecognitionDetail, number_only: bool) -> Option<String> {
-    let text = detail.as_ocr_result()?.text;
+    let text = detail
+        .detail
+        .get("best")
+        .and_then(|best| best.get("text"))
+        .and_then(|text| text.as_str())
+        .map(str::to_owned)
+        .or_else(|| {
+            detail
+                .detail
+                .get("filtered")
+                .and_then(|items| items.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+        })?;
+
     if number_only {
         Some(
             text.chars()
@@ -434,6 +478,21 @@ fn ocr_text_from_detail(detail: &RecognitionDetail, number_only: bool) -> Option
     } else {
         Some(text.trim().to_string())
     }
+}
+
+fn maa_buffer_from_bgr_image(image: &DynamicImage) -> Result<MaaImageBuffer> {
+    let rgb = image.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    let mut bgr = Vec::with_capacity((width * height * 3) as usize);
+    for pixel in rgb.pixels() {
+        bgr.push(pixel[2]);
+        bgr.push(pixel[1]);
+        bgr.push(pixel[0]);
+    }
+
+    let mut buffer = MaaImageBuffer::new()?;
+    buffer.set(&bgr, width as i32, height as i32)?;
+    Ok(buffer)
 }
 
 fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {

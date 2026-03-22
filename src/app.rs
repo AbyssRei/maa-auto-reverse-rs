@@ -7,7 +7,7 @@ use anyhow::Result;
 use iced::widget::image::Handle;
 use iced::widget::text_editor;
 use iced::widget::{
-    button, checkbox, column, container, image as image_view, pick_list, row, scrollable, slider,
+    button, checkbox, column, container, image as image_view, pick_list, radio, row, scrollable,
     text, text_editor as text_editor_widget,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme, application, time};
@@ -30,7 +30,20 @@ struct App {
     logs: Vec<String>,
     scan_result_lines: Vec<String>,
     scan_debug: Option<crate::domain::ScanDebugResult>,
+    cached_debug_images: CachedDebugImages,
     hotkeys: Option<HotkeyService>,
+}
+
+#[derive(Default)]
+struct CachedDebugImages {
+    full_frame: Option<Handle>,
+    slots: Vec<CachedSlotImages>,
+}
+
+#[derive(Default)]
+struct CachedSlotImages {
+    price: Option<Handle>,
+    name: Option<Handle>,
 }
 
 #[derive(Default)]
@@ -75,7 +88,7 @@ enum Message {
     Tick,
     ListsEdited(ListField, text_editor::Action),
     TogglePreset(PresetKind, String, bool),
-    SetScale(f32),
+    SetScale(UiScale),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +134,7 @@ fn initialize() -> (App, Task<Message>) {
             logs: vec!["[启动] 应用已初始化".to_string()],
             scan_result_lines: vec!["暂无识别结果".to_string()],
             scan_debug: None,
+            cached_debug_images: CachedDebugImages::default(),
             hotkeys: HotkeyService::register().ok(),
         },
         Task::perform(async { load_windows_task() }, Message::WindowsLoaded),
@@ -274,6 +288,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     } else {
                         payload.lines
                     };
+                    app.cached_debug_images = CachedDebugImages::from_debug(&payload.debug);
                     app.scan_debug = Some(payload.debug);
                     app.logs.push("[状态] 单次扫描完成".to_string());
                     app.status = RuntimeStatus::Idle;
@@ -325,11 +340,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SetScale(value) => {
-            app.state.app_settings.ui_scale = if value < 0.5 {
-                UiScale::Scale90
-            } else {
-                UiScale::Scale100
-            };
+            app.state.app_settings.ui_scale = value;
             app.state.strategy_config.ui_scale = app.state.app_settings.ui_scale;
             let _ = app.coordinator.save_state(app.state.clone());
             Task::none()
@@ -351,18 +362,19 @@ fn view(app: &App) -> Element<'_, Message> {
         )
         .width(Length::FillPortion(3)),
         button("刷新").on_press(Message::RefreshWindows),
-        text(format!("界面比例: {}", app.state.app_settings.ui_scale)),
-        slider(
-            0.0..=1.0,
-            if app.state.app_settings.ui_scale == UiScale::Scale90 {
-                0.0
-            } else {
-                1.0
-            },
+        text("界面比例:"),
+        radio(
+            "90%",
+            UiScale::Scale90,
+            Some(app.state.app_settings.ui_scale),
             Message::SetScale
-        )
-        .step(1.0)
-        .width(120),
+        ),
+        radio(
+            "100%",
+            UiScale::Scale100,
+            Some(app.state.app_settings.ui_scale),
+            Message::SetScale
+        ),
         text(status_text(app.status)),
     ]
     .spacing(12)
@@ -422,20 +434,30 @@ fn view(app: &App) -> Element<'_, Message> {
 
     let debug_images = if let Some(debug) = &app.scan_debug {
         let mut content = column![text("整张截图")].spacing(8);
-        if let Some(image) = &debug.full_frame {
-            content = content.push(render_image(image, 900));
+        if let Some(handle) = &app.cached_debug_images.full_frame {
+            content = content.push(render_cached_handle(handle.clone(), 900));
         }
-        for slot in &debug.slots {
+        for (index, slot) in debug.slots.iter().enumerate() {
             content = content.push(text(format!(
                 "槽位 {} | 价格OCR: {} | 名称OCR: {}",
                 slot.slot, slot.price_ocr, slot.name_ocr
             )));
             let mut row_widgets = row![].spacing(8);
-            if let Some(image) = &slot.price_roi {
-                row_widgets = row_widgets.push(render_image(image, 220));
+            if let Some(handle) = app
+                .cached_debug_images
+                .slots
+                .get(index)
+                .and_then(|slot| slot.price.clone())
+            {
+                row_widgets = row_widgets.push(render_cached_handle(handle, 220));
             }
-            if let Some(image) = &slot.name_roi {
-                row_widgets = row_widgets.push(render_image(image, 360));
+            if let Some(handle) = app
+                .cached_debug_images
+                .slots
+                .get(index)
+                .and_then(|slot| slot.name.clone())
+            {
+                row_widgets = row_widgets.push(render_cached_handle(handle, 360));
             }
             content = content.push(row_widgets);
         }
@@ -482,14 +504,10 @@ fn preset_section<'a>(
     content.into()
 }
 
-fn render_image<'a>(preview: &'a ImagePreview, max_width: u16) -> Element<'a, Message> {
-    image_view(Handle::from_rgba(
-        preview.width,
-        preview.height,
-        preview.rgba.clone(),
-    ))
-    .width(Length::Fixed(max_width as f32))
-    .into()
+fn render_cached_handle<'a>(handle: Handle, max_width: u16) -> Element<'a, Message> {
+    image_view(handle)
+        .width(Length::Fixed(max_width as f32))
+        .into()
 }
 
 fn status_text(status: RuntimeStatus) -> &'static str {
@@ -574,4 +592,24 @@ fn apply_preset_toggle(app: &mut App, kind: PresetKind, value: String, checked: 
     app.state.strategy_config = strategy.clone();
     app.editable = EditableEditors::from_lists(&EditableLists::from_strategy(&strategy));
     let _ = app.coordinator.update_strategy(strategy);
+}
+
+fn preview_handle(preview: &ImagePreview) -> Handle {
+    Handle::from_rgba(preview.width, preview.height, preview.rgba.clone())
+}
+
+impl CachedDebugImages {
+    fn from_debug(debug: &crate::domain::ScanDebugResult) -> Self {
+        Self {
+            full_frame: debug.full_frame.as_ref().map(preview_handle),
+            slots: debug
+                .slots
+                .iter()
+                .map(|slot| CachedSlotImages {
+                    price: slot.price_roi.as_ref().map(preview_handle),
+                    name: slot.name_roi.as_ref().map(preview_handle),
+                })
+                .collect(),
+        }
+    }
 }

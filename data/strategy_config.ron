@@ -81,5 +81,5 @@
     post_action_refresh_wait: 0.4,
     sell_click_wait: 0.03,
     refresh_keep_mode: false,
-    ui_scale: Scale90,
+    ui_scale: Scale100,
 )

@@ -65,9 +65,14 @@ impl MaaRuntimeSession {
         let resource = Resource::new()?;
         resource.register_custom_action("AutoReverseTick", Box::new(TickAction))?;
         resource.register_custom_action("AutoReverseScanOnce", Box::new(ScanOnceAction))?;
-        resource
-            .post_bundle(paths.legacy_bundle_dir.to_str().unwrap_or("."))?
-            .wait();
+        let bundle_job = resource.post_bundle(paths.legacy_bundle_dir.to_str().unwrap_or("."))?;
+        bundle_job.wait();
+        if !bundle_job.succeeded() {
+            return Err(anyhow!(
+                "加载 MAA bundle 失败: {}",
+                paths.legacy_bundle_dir.display()
+            ));
+        }
 
         let controller = build_win32_controller(window_title)?;
         controller.wait(controller.post_connection()?);
@@ -78,7 +83,6 @@ impl MaaRuntimeSession {
         if !tasker.inited() {
             return Err(anyhow!("Tasker init failed"));
         }
-
         let logger = logging::app_logger()?;
         let engine = AutoReverseEngine::new(config, logger);
         let scan_state = Arc::new((Mutex::new(SharedScanState::default()), Condvar::new()));
@@ -139,9 +143,14 @@ impl MaaRuntimeSession {
         let resource = Resource::new()?;
         resource.register_custom_action("AutoReverseTick", Box::new(TickAction))?;
         resource.register_custom_action("AutoReverseScanOnce", Box::new(ScanOnceAction))?;
-        resource
-            .post_bundle(paths.legacy_bundle_dir.to_str().unwrap_or("."))?
-            .wait();
+        let bundle_job = resource.post_bundle(paths.legacy_bundle_dir.to_str().unwrap_or("."))?;
+        bundle_job.wait();
+        if !bundle_job.succeeded() {
+            return Err(anyhow!(
+                "加载 MAA bundle 失败: {}",
+                paths.legacy_bundle_dir.display()
+            ));
+        }
 
         let controller = build_win32_controller(window_title)?;
         controller.wait(controller.post_connection()?);
@@ -149,6 +158,9 @@ impl MaaRuntimeSession {
         let tasker = Tasker::new()?;
         tasker.bind_resource(&resource)?;
         tasker.bind_controller(&controller)?;
+        if !tasker.inited() {
+            return Err(anyhow!("Tasker init failed"));
+        }
 
         let scan_state = Arc::new((Mutex::new(SharedScanState::default()), Condvar::new()));
         {
@@ -189,7 +201,7 @@ struct TickAction;
 impl CustomAction for TickAction {
     fn run(
         &self,
-        context: &Context,
+        _context: &Context,
         _task_id: common::MaaId,
         _node_name: &str,
         _custom_action_name: &str,
@@ -208,7 +220,7 @@ impl CustomAction for TickAction {
 
         bridge
             .engine
-            .tick(context, &bridge.controller, bridge.mode)
+            .tick(_context, &bridge.controller, bridge.mode)
             .unwrap_or(false)
     }
 }
@@ -218,7 +230,7 @@ struct ScanOnceAction;
 impl CustomAction for ScanOnceAction {
     fn run(
         &self,
-        context: &Context,
+        _context: &Context,
         _task_id: common::MaaId,
         _node_name: &str,
         _custom_action_name: &str,
@@ -235,7 +247,7 @@ impl CustomAction for ScanOnceAction {
             return false;
         };
 
-        let result = bridge.engine.scan_once_debug(context, &bridge.controller);
+        let result = bridge.engine.scan_once_debug(_context, &bridge.controller);
         let (lock, cv) = &*bridge.scan_state;
         let mut state = lock.lock().expect("scan state");
         match result {
