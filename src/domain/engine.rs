@@ -1,7 +1,8 @@
 use crate::domain::config::{RuntimeMode, StrategyConfig, UiScale};
 use crate::domain::image_ops::{
-    ImagePreview, ScanDebugResult, SlotDebugInfo, center_of_roi, crop_relative,
-    find_hand_change_center, has_image_changed, preprocess_roi, roi_set,
+    ImagePreview, ScanDebugResult, SlotDebugInfo, annotate_recognized_slots_frame,
+    annotate_scan_frame, center_of_roi, crop_relative, find_hand_change_center, has_image_changed,
+    preprocess_roi, roi_set,
 };
 use crate::domain::strategy::{PlannedActionKind, RecognizedCard, plan_actions};
 use anyhow::Result;
@@ -189,6 +190,8 @@ impl AutoReverseEngine {
         let mut cards = Vec::new();
         let mut debug = ScanDebugResult {
             full_frame: Some(ImagePreview::from_dynamic(frame)),
+            annotated_frame: Some(annotate_scan_frame(frame, scale)),
+            recognized_frame: None,
             slots: Vec::new(),
         };
 
@@ -203,6 +206,7 @@ impl AutoReverseEngine {
                 slot, price_text, name_text
             ));
 
+            let recognized = !name_text.trim().is_empty();
             if !name_text.trim().is_empty() {
                 let price = price_text.parse::<i32>().unwrap_or(-1);
                 cards.push(RecognizedCard {
@@ -214,12 +218,15 @@ impl AutoReverseEngine {
 
             debug.slots.push(SlotDebugInfo {
                 slot,
+                recognized,
                 price_ocr: price_text.clone(),
                 name_ocr: name_text.clone(),
                 price_roi: Some(ImagePreview::from_dynamic(&price_crop)),
                 name_roi: Some(ImagePreview::from_dynamic(&name_crop)),
             });
         }
+
+        debug.recognized_frame = Some(annotate_recognized_slots_frame(frame, scale, &debug.slots));
 
         Ok((cards, debug))
     }

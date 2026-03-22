@@ -10,7 +10,9 @@ use iced::widget::{
     button, checkbox, column, container, image as image_view, pick_list, radio, row, scrollable,
     text, text_editor as text_editor_widget,
 };
-use iced::{Alignment, Element, Length, Subscription, Task, Theme, application, time};
+use iced::{
+    Alignment, Element, Length, Size, Subscription, Task, Theme, application, time, window,
+};
 use std::time::Duration;
 
 pub fn run_gui() -> iced::Result {
@@ -32,11 +34,14 @@ struct App {
     scan_debug: Option<crate::domain::ScanDebugResult>,
     cached_debug_images: CachedDebugImages,
     hotkeys: Option<HotkeyService>,
+    window_width: f32,
 }
 
 #[derive(Default)]
 struct CachedDebugImages {
     full_frame: Option<Handle>,
+    annotated_frame: Option<Handle>,
+    recognized_frame: Option<Handle>,
     slots: Vec<CachedSlotImages>,
 }
 
@@ -89,6 +94,7 @@ enum Message {
     ListsEdited(ListField, text_editor::Action),
     TogglePreset(PresetKind, String, bool),
     SetScale(UiScale),
+    WindowResized(Size),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -136,6 +142,7 @@ fn initialize() -> (App, Task<Message>) {
             scan_debug: None,
             cached_debug_images: CachedDebugImages::default(),
             hotkeys: HotkeyService::register().ok(),
+            window_width: 1280.0,
         },
         Task::perform(async { load_windows_task() }, Message::WindowsLoaded),
     )
@@ -345,11 +352,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let _ = app.coordinator.save_state(app.state.clone());
             Task::none()
         }
+        Message::WindowResized(size) => {
+            app.window_width = size.width;
+            Task::none()
+        }
     }
 }
 
 fn subscription(_app: &App) -> Subscription<Message> {
-    time::every(Duration::from_millis(250)).map(|_| Message::Tick)
+    Subscription::batch([
+        time::every(Duration::from_millis(250)).map(|_| Message::Tick),
+        window::resize_events().map(|(_id, size)| Message::WindowResized(size)),
+    ])
 }
 
 fn view(app: &App) -> Element<'_, Message> {
@@ -404,7 +418,8 @@ fn view(app: &App) -> Element<'_, Message> {
             "预设道具选择",
             &app.state.presets.predefined_items,
             &app.state.strategy_config.item_list,
-            PresetKind::Item
+            PresetKind::Item,
+            app.window_width,
         ),
         text("倒转干员"),
         text_editor_widget(&app.editable.operators)
@@ -419,6 +434,7 @@ fn view(app: &App) -> Element<'_, Message> {
             &app.state.presets.predefined_buy_only_operators,
             &app.state.strategy_config.buy_only_operator_list,
             PresetKind::BuyOnlyOperator,
+            app.window_width,
         ),
         text("不处理名单"),
         text_editor_widget(&app.editable.six_star)
@@ -433,14 +449,43 @@ fn view(app: &App) -> Element<'_, Message> {
         .fold(column![], |column, line| column.push(text(line.clone())));
 
     let debug_images = if let Some(debug) = &app.scan_debug {
-        let mut content = column![text("整张截图")].spacing(8);
+        let mut content = column![text("整张截图与 ROI 标注")].spacing(8);
+        let mut frame_row = row![].spacing(12);
         if let Some(handle) = &app.cached_debug_images.full_frame {
-            content = content.push(render_cached_handle(handle.clone(), 900));
+            frame_row = frame_row
+                .push(column![text("原图"), render_cached_handle(handle.clone(), 560)].spacing(6));
         }
+        if let Some(handle) = &app.cached_debug_images.annotated_frame {
+            frame_row = frame_row.push(
+                column![text("标注图"), render_cached_handle(handle.clone(), 560)].spacing(6),
+            );
+        }
+        content = content.push(frame_row);
+
+        let mut focus_row = row![].spacing(12);
+        if let Some(handle) = &app.cached_debug_images.recognized_frame {
+            focus_row = focus_row.push(
+                column![
+                    text("识别命中图"),
+                    render_cached_handle(handle.clone(), 560)
+                ]
+                .spacing(6),
+            );
+        }
+        focus_row = focus_row.push(
+            container(recognized_summary(debug))
+                .padding(10)
+                .width(Length::Fill),
+        );
+        content = content.push(focus_row);
+
         for (index, slot) in debug.slots.iter().enumerate() {
             content = content.push(text(format!(
-                "槽位 {} | 价格OCR: {} | 名称OCR: {}",
-                slot.slot, slot.price_ocr, slot.name_ocr
+                "槽位 {}{} | 价格OCR: {} | 名称OCR: {}",
+                slot.slot,
+                if slot.recognized { " [命中]" } else { "" },
+                slot.price_ocr,
+                slot.name_ocr
             )));
             let mut row_widgets = row![].spacing(8);
             if let Some(handle) = app
@@ -491,16 +536,25 @@ fn preset_section<'a>(
     entries: &'a [PresetEntry],
     selected: &'a [String],
     kind: PresetKind,
+    window_width: f32,
 ) -> Element<'a, Message> {
-    let content = entries
-        .iter()
-        .fold(column![text(title)].spacing(4), |column, entry| {
+    let columns = preset_columns(window_width);
+    let mut content = column![text(title)].spacing(8);
+
+    for chunk in entries.chunks(columns) {
+        let row_widgets = chunk.iter().fold(row![].spacing(12), |row, entry| {
             let checked = selected.iter().any(|item| item == &entry.value);
-            column.push(checkbox(checked).label(entry.label.clone()).on_toggle({
-                let value = entry.value.clone();
-                move |checked| Message::TogglePreset(kind, value.clone(), checked)
-            }))
+            row.push(
+                container(checkbox(checked).label(entry.label.clone()).on_toggle({
+                    let value = entry.value.clone();
+                    move |checked| Message::TogglePreset(kind, value.clone(), checked)
+                }))
+                .width(Length::FillPortion(1)),
+            )
         });
+        content = content.push(row_widgets);
+    }
+
     content.into()
 }
 
@@ -508,6 +562,57 @@ fn render_cached_handle<'a>(handle: Handle, max_width: u16) -> Element<'a, Messa
     image_view(handle)
         .width(Length::Fixed(max_width as f32))
         .into()
+}
+
+fn recognized_summary<'a>(debug: &'a crate::domain::ScanDebugResult) -> Element<'a, Message> {
+    let recognized: Vec<_> = debug.slots.iter().filter(|slot| slot.recognized).collect();
+
+    let content = if recognized.is_empty() {
+        column![
+            text("OCR 摘要"),
+            text("图例: 红框=价格, 橙框=名称, 灰框=未命中"),
+            text("本次暂无识别命中槽位")
+        ]
+        .spacing(6)
+    } else {
+        recognized.into_iter().fold(
+            column![
+                text("OCR 摘要"),
+                text("图例: 红框=价格, 橙框=名称, 灰框=未命中")
+            ]
+            .spacing(6),
+            |column, slot| {
+                column.push(text(format!(
+                    "槽位 {} | 价格 {} | 名称 {}",
+                    slot.slot,
+                    if slot.price_ocr.is_empty() {
+                        "(空)"
+                    } else {
+                        &slot.price_ocr
+                    },
+                    if slot.name_ocr.is_empty() {
+                        "(空)"
+                    } else {
+                        &slot.name_ocr
+                    }
+                )))
+            },
+        )
+    };
+
+    content.into()
+}
+
+fn preset_columns(window_width: f32) -> usize {
+    if window_width >= 1500.0 {
+        4
+    } else if window_width >= 1180.0 {
+        3
+    } else if window_width >= 860.0 {
+        2
+    } else {
+        1
+    }
 }
 
 fn status_text(status: RuntimeStatus) -> &'static str {
@@ -602,6 +707,8 @@ impl CachedDebugImages {
     fn from_debug(debug: &crate::domain::ScanDebugResult) -> Self {
         Self {
             full_frame: debug.full_frame.as_ref().map(preview_handle),
+            annotated_frame: debug.annotated_frame.as_ref().map(preview_handle),
+            recognized_frame: debug.recognized_frame.as_ref().map(preview_handle),
             slots: debug
                 .slots
                 .iter()
