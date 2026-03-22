@@ -293,13 +293,31 @@ impl AutoReverseEngine {
             self.log("只剩一格空位了，注意手牌管理");
         }
 
-        let hand_after = crop_relative(&after_buy, rois.hand_area_roi);
-        let Some(center_x) = find_hand_change_center(&hand_before, &hand_after) else {
+        let hand_full_after_buy = self.is_hand_full(&after_buy, config.ui_scale);
+        let mut after_frame = after_buy;
+        let mut hand_after = crop_relative(&after_frame, rois.hand_area_roi);
+        let mut center_x = find_hand_change_center(&hand_before, &hand_after);
+
+        if center_x.is_none() && hand_full_after_buy {
+            self.log("购买后手牌已满，继续截图检测手牌变动位置后执行售卖");
+            let deadline = Instant::now() + Duration::from_secs_f32(config.stable_timeout.max(0.3));
+            while Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(100));
+                after_frame = self.capture_frame(controller)?;
+                hand_after = crop_relative(&after_frame, rois.hand_area_roi);
+                center_x = find_hand_change_center(&hand_before, &hand_after);
+                if center_x.is_some() {
+                    break;
+                }
+            }
+        }
+
+        let Some(center_x) = center_x else {
             self.log("未检测到手牌变化");
             return Ok(false);
         };
 
-        let (w, h) = after_buy.dimensions();
+        let (w, h) = after_frame.dimensions();
         let abs_x = (rois.hand_area_roi.0 * w as f32 + center_x) as i32;
         let abs_y = ((rois.hand_area_roi.1 + rois.hand_area_roi.3 / 2.0) * h as f32) as i32;
         controller.wait(controller.post_click(abs_x, abs_y)?);
