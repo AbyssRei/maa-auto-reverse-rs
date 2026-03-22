@@ -188,6 +188,9 @@ impl MaaRuntimeSession {
         };
 
         tasker.post_stop()?;
+        while tasker.running() {
+            thread::sleep(Duration::from_millis(50));
+        }
         if let Ok(mut bridge) = BRIDGE.lock() {
             *bridge = None;
         }
@@ -262,7 +265,7 @@ impl CustomAction for ScanOnceAction {
             }
         }
         cv.notify_all();
-        false
+        true
     }
 }
 

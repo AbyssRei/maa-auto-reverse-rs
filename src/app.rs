@@ -4,6 +4,7 @@ use crate::domain::{
 use crate::infra::hotkey::{HotkeyService, HotkeySignal};
 use crate::orchestrator::{RuntimeCoordinator, RuntimeStatus};
 use anyhow::Result;
+use chrono::Local;
 use iced::widget::image::Handle;
 use iced::widget::text_editor;
 use iced::widget::{
@@ -13,6 +14,8 @@ use iced::widget::{
 use iced::{
     Alignment, Element, Length, Size, Subscription, Task, Theme, application, time, window,
 };
+use image::RgbaImage;
+use rfd::FileDialog;
 use std::time::Duration;
 
 pub fn run_gui() -> iced::Result {
@@ -95,6 +98,8 @@ enum Message {
     TogglePreset(PresetKind, String, bool),
     SetScale(UiScale),
     WindowResized(Size),
+    SaveImage(ImageSaveTarget),
+    ImageSaved(Result<String, String>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +114,15 @@ enum ListField {
 enum PresetKind {
     Item,
     BuyOnlyOperator,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImageSaveTarget {
+    FullFrame,
+    AnnotatedFrame,
+    RecognizedFrame,
+    SlotPrice(usize),
+    SlotName(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +370,27 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.window_width = size.width;
             Task::none()
         }
+        Message::SaveImage(target) => {
+            let Some((preview, filename)) = preview_for_target(app, target) else {
+                app.logs.push("[错误] 未找到可导出的图片".to_string());
+                return Task::none();
+            };
+
+            Task::perform(
+                async move { save_preview_with_dialog(preview, filename).map_err(|e| e.to_string()) },
+                Message::ImageSaved,
+            )
+        }
+        Message::ImageSaved(result) => {
+            match result {
+                Ok(path) => app.logs.push(format!("[状态] 图片已保存: {path}")),
+                Err(error) if error == "__CANCELLED__" => {
+                    app.logs.push("[状态] 已取消保存图片".to_string())
+                }
+                Err(error) => app.logs.push(format!("[错误] 图片保存失败: {error}")),
+            }
+            Task::none()
+        }
     }
 }
 
@@ -443,21 +478,36 @@ fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(8);
 
-    let scan_lines = app
-        .scan_result_lines
-        .iter()
-        .fold(column![], |column, line| column.push(text(line.clone())));
-
     let debug_images = if let Some(debug) = &app.scan_debug {
-        let mut content = column![text("整张截图与 ROI 标注")].spacing(8);
+        let mut content = column![text("图像调试")].spacing(12);
         let mut frame_row = row![].spacing(12);
         if let Some(handle) = &app.cached_debug_images.full_frame {
-            frame_row = frame_row
-                .push(column![text("原图"), render_cached_handle(handle.clone(), 560)].spacing(6));
+            frame_row = frame_row.push(
+                column![
+                    row![
+                        text("原图"),
+                        button("保存").on_press(Message::SaveImage(ImageSaveTarget::FullFrame))
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    render_cached_handle(handle.clone(), 560)
+                ]
+                .spacing(6),
+            );
         }
         if let Some(handle) = &app.cached_debug_images.annotated_frame {
             frame_row = frame_row.push(
-                column![text("标注图"), render_cached_handle(handle.clone(), 560)].spacing(6),
+                column![
+                    row![
+                        text("标注图"),
+                        button("保存")
+                            .on_press(Message::SaveImage(ImageSaveTarget::AnnotatedFrame))
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    render_cached_handle(handle.clone(), 560)
+                ]
+                .spacing(6),
             );
         }
         content = content.push(frame_row);
@@ -466,7 +516,13 @@ fn view(app: &App) -> Element<'_, Message> {
         if let Some(handle) = &app.cached_debug_images.recognized_frame {
             focus_row = focus_row.push(
                 column![
-                    text("识别命中图"),
+                    row![
+                        text("识别命中图"),
+                        button("保存")
+                            .on_press(Message::SaveImage(ImageSaveTarget::RecognizedFrame))
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                     render_cached_handle(handle.clone(), 560)
                 ]
                 .spacing(6),
@@ -478,38 +534,25 @@ fn view(app: &App) -> Element<'_, Message> {
                 .width(Length::Fill),
         );
         content = content.push(focus_row);
-
-        for (index, slot) in debug.slots.iter().enumerate() {
-            content = content.push(text(format!(
-                "槽位 {}{} | 价格OCR: {} | 名称OCR: {}",
-                slot.slot,
-                if slot.recognized { " [命中]" } else { "" },
-                slot.price_ocr,
-                slot.name_ocr
-            )));
-            let mut row_widgets = row![].spacing(8);
-            if let Some(handle) = app
-                .cached_debug_images
-                .slots
-                .get(index)
-                .and_then(|slot| slot.price.clone())
-            {
-                row_widgets = row_widgets.push(render_cached_handle(handle, 220));
-            }
-            if let Some(handle) = app
-                .cached_debug_images
-                .slots
-                .get(index)
-                .and_then(|slot| slot.name.clone())
-            {
-                row_widgets = row_widgets.push(render_cached_handle(handle, 360));
-            }
-            content = content.push(row_widgets);
-        }
         content
     } else {
-        column![]
+        column![
+            text("图像调试"),
+            text("完成一次识别测试后会在这里显示原图、标注图和命中图")
+        ]
+        .spacing(8)
     };
+
+    let slot_cards = if let Some(debug) = &app.scan_debug {
+        debug.slots.iter().enumerate().fold(
+            column![text("槽位明细")].spacing(10),
+            |column, (index, slot)| column.push(slot_debug_card(app, index, slot)),
+        )
+    } else {
+        column![text("槽位明细"), text("暂无槽位识别数据")].spacing(8)
+    };
+
+    let results_panel = column![result_overview(app), debug_images, slot_cards,].spacing(16);
 
     let logs = app
         .logs
@@ -518,15 +561,25 @@ fn view(app: &App) -> Element<'_, Message> {
         .take(200)
         .fold(column![], |column, line| column.push(text(line.clone())));
 
-    let body = column![
-        top,
-        controls,
-        container(editors).padding(12),
-        container(column![text("识别结果"), scan_lines, debug_images].spacing(8)).padding(12),
-        container(column![text("日志"), logs].spacing(4)).padding(12),
-    ]
-    .spacing(16)
-    .padding(16);
+    let config_panel = container(column![text("策略配置"), editors].spacing(12)).padding(12);
+    let results_panel = container(results_panel).padding(12);
+    let log_panel = container(column![text("日志"), logs].spacing(4)).padding(12);
+
+    let main_content = if app.window_width >= 1380.0 {
+        column![
+            row![
+                container(config_panel).width(Length::FillPortion(2)),
+                container(results_panel).width(Length::FillPortion(3)),
+            ]
+            .spacing(16),
+            log_panel,
+        ]
+        .spacing(16)
+    } else {
+        column![config_panel, results_panel, log_panel].spacing(16)
+    };
+
+    let body = column![top, controls, main_content].spacing(16).padding(16);
 
     scrollable(body).into()
 }
@@ -562,6 +615,125 @@ fn render_cached_handle<'a>(handle: Handle, max_width: u16) -> Element<'a, Messa
     image_view(handle)
         .width(Length::Fixed(max_width as f32))
         .into()
+}
+
+fn result_overview<'a>(app: &'a App) -> Element<'a, Message> {
+    let recognized = app
+        .scan_debug
+        .as_ref()
+        .map(|debug| debug.slots.iter().filter(|slot| slot.recognized).count())
+        .unwrap_or(0);
+    let scanned = app
+        .scan_debug
+        .as_ref()
+        .map(|debug| debug.slots.len())
+        .unwrap_or(0);
+    let result_lines = app
+        .scan_result_lines
+        .iter()
+        .fold(column![text("识别结果")].spacing(6), |column, line| {
+            column.push(text(line.clone()))
+        });
+
+    column![
+        text("识别概览"),
+        row![
+            metric_card_owned("窗口", app.state.app_settings.selected_window_title.clone()),
+            metric_card_owned("扫描槽位", scanned.to_string()),
+            metric_card_owned("命中槽位", recognized.to_string()),
+            metric_card_owned("状态", status_text(app.status).to_string()),
+        ]
+        .spacing(12),
+        container(result_lines).padding(10),
+    ]
+    .spacing(12)
+    .into()
+}
+
+fn slot_debug_card<'a>(
+    app: &'a App,
+    index: usize,
+    slot: &'a crate::domain::SlotDebugInfo,
+) -> Element<'a, Message> {
+    let title = format!(
+        "槽位 {}{}",
+        slot.slot,
+        if slot.recognized {
+            " · 命中"
+        } else {
+            " · 未命中"
+        }
+    );
+
+    let mut image_row = row![].spacing(12);
+    if let Some(handle) = app
+        .cached_debug_images
+        .slots
+        .get(index)
+        .and_then(|slot| slot.price.clone())
+    {
+        image_row = image_row.push(
+            column![
+                row![
+                    text("价格 ROI"),
+                    button("保存").on_press(Message::SaveImage(ImageSaveTarget::SlotPrice(index)))
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                render_cached_handle(handle, 220)
+            ]
+            .spacing(6),
+        );
+    }
+    if let Some(handle) = app
+        .cached_debug_images
+        .slots
+        .get(index)
+        .and_then(|slot| slot.name.clone())
+    {
+        image_row = image_row.push(
+            column![
+                row![
+                    text("名称 ROI"),
+                    button("保存").on_press(Message::SaveImage(ImageSaveTarget::SlotName(index)))
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                render_cached_handle(handle, 320)
+            ]
+            .spacing(6),
+        );
+    }
+
+    container(
+        column![
+            text(title),
+            row![
+                metric_card_owned("价格 OCR", display_text(&slot.price_ocr)),
+                metric_card_owned("名称 OCR", display_text(&slot.name_ocr)),
+            ]
+            .spacing(12),
+            image_row,
+        ]
+        .spacing(10),
+    )
+    .padding(10)
+    .into()
+}
+
+fn metric_card_owned(label: &'static str, value: String) -> Element<'static, Message> {
+    container(column![text(label), text(value)].spacing(4))
+        .padding(10)
+        .width(Length::FillPortion(1))
+        .into()
+}
+
+fn display_text(value: &str) -> String {
+    if value.trim().is_empty() {
+        "(空)".to_string()
+    } else {
+        value.to_string()
+    }
 }
 
 fn recognized_summary<'a>(debug: &'a crate::domain::ScanDebugResult) -> Element<'a, Message> {
@@ -719,4 +891,57 @@ impl CachedDebugImages {
                 .collect(),
         }
     }
+}
+
+fn preview_for_target(app: &App, target: ImageSaveTarget) -> Option<(ImagePreview, String)> {
+    let debug = app.scan_debug.as_ref()?;
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+
+    match target {
+        ImageSaveTarget::FullFrame => Some((
+            debug.full_frame.clone()?,
+            format!("{timestamp}_full_frame.png"),
+        )),
+        ImageSaveTarget::AnnotatedFrame => Some((
+            debug.annotated_frame.clone()?,
+            format!("{timestamp}_annotated_frame.png"),
+        )),
+        ImageSaveTarget::RecognizedFrame => Some((
+            debug.recognized_frame.clone()?,
+            format!("{timestamp}_recognized_frame.png"),
+        )),
+        ImageSaveTarget::SlotPrice(index) => {
+            let slot = debug.slots.get(index)?;
+            Some((
+                slot.price_roi.clone()?,
+                format!("{timestamp}_slot{}_price.png", slot.slot),
+            ))
+        }
+        ImageSaveTarget::SlotName(index) => {
+            let slot = debug.slots.get(index)?;
+            Some((
+                slot.name_roi.clone()?,
+                format!("{timestamp}_slot{}_name.png", slot.slot),
+            ))
+        }
+    }
+}
+
+fn save_preview_with_dialog(preview: ImagePreview, filename: String) -> anyhow::Result<String> {
+    let Some(path) = FileDialog::new()
+        .add_filter("PNG image", &["png"])
+        .set_file_name(&filename)
+        .save_file()
+    else {
+        return Err(anyhow::anyhow!("__CANCELLED__"));
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let image = RgbaImage::from_raw(preview.width, preview.height, preview.rgba)
+        .ok_or_else(|| anyhow::anyhow!("图片数据无效"))?;
+    image.save(&path)?;
+
+    Ok(path.display().to_string())
 }
