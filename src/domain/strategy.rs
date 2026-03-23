@@ -170,3 +170,44 @@ pub fn plan_actions(
 
     actions
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn plans_actions_like_python_priority_rules() {
+        let cards = vec![
+            RecognizedCard {
+                slot: 1,
+                name: "人事部文档".to_string(),
+                price: 3,
+            },
+            RecognizedCard {
+                slot: 2,
+                name: "德克萨斯".to_string(),
+                price: 2,
+            },
+            RecognizedCard {
+                slot: 3,
+                name: "宴".to_string(),
+                price: 1,
+            },
+        ];
+
+        let actions = plan_actions(
+            &cards,
+            &["人事部文档".to_string()],
+            &["德克萨斯".to_string()],
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(actions.len(), 3);
+        assert_eq!(actions[0].kind, PlannedActionKind::BuyItem);
+        assert_eq!(actions[1].kind, PlannedActionKind::BuySellOperator);
+        assert_eq!(actions[2].kind, PlannedActionKind::BuySellCheapOperator);
+    }
+}

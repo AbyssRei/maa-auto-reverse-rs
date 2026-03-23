@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use ron::ser::PrettyConfig;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::path::Path;
 
 pub fn load_or_import_state() -> Result<PersistedState> {
@@ -22,7 +21,7 @@ pub fn load_or_import_state() -> Result<PersistedState> {
         });
     }
 
-    let imported = import_legacy_state()?;
+    let imported = import_local_state()?;
     save_state(&imported)?;
     Ok(imported)
 }
@@ -40,11 +39,14 @@ pub fn save_state(state: &PersistedState) -> Result<()> {
     Ok(())
 }
 
-fn import_legacy_state() -> Result<PersistedState> {
+fn import_local_state() -> Result<PersistedState> {
     let paths = paths::app_paths()?;
+    let maa_option_path = paths.config_dir.join("maa_option.json");
+    let advanced_config_path = paths.config_dir.join("advanced_config.json");
 
-    let app_settings = if paths.legacy_config_dir.join("maa_option.json").exists() {
-        let json = read_json::<Value>(&paths.legacy_config_dir.join("maa_option.json"))?;
+    let app_settings = if maa_option_path.exists() {
+        let json = read_json::<Value>(&maa_option_path)?;
+        let ui_scale = read_advanced_ui_scale(&advanced_config_path).unwrap_or(UiScale::Scale90);
         AppSettings {
             selected_window_title: json
                 .get("window_title")
@@ -52,60 +54,62 @@ fn import_legacy_state() -> Result<PersistedState> {
                 .unwrap_or("明日方舟")
                 .to_string(),
             controller: crate::domain::ControllerKind::Win32,
-            ui_scale: UiScale::Scale90,
+            ui_scale,
             recent_windows: Vec::new(),
         }
     } else {
         AppSettings::default()
     };
 
-    let default_json = if paths
-        .legacy_root
-        .join("autoreverse")
-        .join("config.default.json")
-        .exists()
-    {
-        read_json::<Value>(
-            &paths
-                .legacy_root
-                .join("autoreverse")
-                .join("config.default.json"),
-        )?
-    } else {
-        Value::Null
-    };
+    let mut strategy_config = StrategyConfig::default();
+    strategy_config.item_list = read_string_list(&paths.config_dir.join("buy_items.json"))?;
+    strategy_config.operator_list =
+        read_string_list(&paths.config_dir.join("buy_sell_operators.json"))?;
+    strategy_config.buy_only_operator_list =
+        read_string_list(&paths.config_dir.join("buy_only_operators.json"))?;
+    strategy_config.six_star_list =
+        read_string_list(&paths.config_dir.join("six_star_operators.json"))?;
 
-    let strategy_config = StrategyConfig {
-        item_list: read_string_list(&paths.legacy_config_dir.join("buy_items.json"))?,
-        operator_list: read_string_list(&paths.legacy_config_dir.join("buy_sell_operators.json"))?,
-        buy_only_operator_list: read_string_list(
-            &paths.legacy_config_dir.join("buy_only_operators.json"),
-        )?,
-        six_star_list: read_string_list(&paths.legacy_config_dir.join("six_star_operators.json"))?,
-        ocr_correction_map: read_string_map(&default_json, "ocr_correction_map")
-            .unwrap_or_else(|| StrategyConfig::default().ocr_correction_map),
-        change_threshold: read_f32(&default_json, "change_threshold", 5.0),
-        shop_refresh_change_threshold: read_f32(
-            &default_json,
-            "shop_refresh_change_threshold",
-            15.0,
-        ),
-        stable_threshold: read_f32(&default_json, "stable_threshold", 2.0),
-        stable_timeout: read_f32(&default_json, "stable_timeout", 2.0),
-        post_action_refresh_wait: read_f32(&default_json, "post_action_refresh_wait", 0.4),
-        sell_click_wait: read_f32(&default_json, "sell_click_wait", 0.03),
-        refresh_keep_mode: false,
-        ui_scale: UiScale::Scale90,
-    };
+    if advanced_config_path.exists() {
+        let json = read_json::<Value>(&advanced_config_path)?;
+        strategy_config.ocr_correction_map = json
+            .get("ocr_correction_map")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|value| (key.clone(), value.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| strategy_config.ocr_correction_map.clone());
+        strategy_config.change_threshold =
+            read_f32(&json, "change_threshold").unwrap_or(strategy_config.change_threshold);
+        strategy_config.shop_refresh_change_threshold =
+            read_f32(&json, "shop_refresh_change_threshold")
+                .unwrap_or(strategy_config.shop_refresh_change_threshold);
+        strategy_config.stable_threshold =
+            read_f32(&json, "stable_threshold").unwrap_or(strategy_config.stable_threshold);
+        strategy_config.stable_timeout =
+            read_f32(&json, "stable_timeout").unwrap_or(strategy_config.stable_timeout);
+        strategy_config.post_action_refresh_wait = read_f32(&json, "post_action_refresh_wait")
+            .unwrap_or(strategy_config.post_action_refresh_wait);
+        strategy_config.sell_click_wait =
+            read_f32(&json, "sell_click_wait").unwrap_or(strategy_config.sell_click_wait);
+        strategy_config.double_click_interval = read_f32(&json, "double_click_interval")
+            .unwrap_or(strategy_config.double_click_interval);
+        strategy_config.stable_poll_interval =
+            read_f32(&json, "stable_poll_interval").unwrap_or(strategy_config.stable_poll_interval);
+        strategy_config.action_interval =
+            read_f32(&json, "action_interval").unwrap_or(strategy_config.action_interval);
+        strategy_config.ui_scale =
+            read_advanced_ui_scale(&advanced_config_path).unwrap_or(strategy_config.ui_scale);
+    }
 
     let presets = PresetCatalog {
-        predefined_items: read_preset_entries(
-            &paths.legacy_config_dir.join("predefined_items.json"),
-        )?,
+        predefined_items: read_preset_entries(&paths.config_dir.join("predefined_items.json"))?,
         predefined_buy_only_operators: read_preset_entries(
-            &paths
-                .legacy_config_dir
-                .join("predefined_buy_only_operators.json"),
+            &paths.config_dir.join("predefined_buy_only_operators.json"),
         )?,
     };
 
@@ -140,23 +144,31 @@ fn read_string_list(path: &Path) -> Result<Vec<String>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    read_json(path)
+
+    let json = read_json::<Value>(path)?;
+    Ok(json
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(ToString::to_string))
+        .collect())
 }
 
-fn read_string_map(json: &Value, key: &str) -> Option<BTreeMap<String, String>> {
-    let obj = json.get(key)?.as_object()?;
-    Some(
-        obj.iter()
-            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-            .collect(),
-    )
+fn read_f32(json: &Value, key: &str) -> Option<f32> {
+    json.get(key).and_then(|value| match value {
+        Value::Number(number) => number.as_f64().map(|value| value as f32),
+        Value::String(text) => text.parse::<f32>().ok(),
+        _ => None,
+    })
 }
 
-fn read_f32(json: &Value, key: &str, default: f32) -> f32 {
-    json.get(key)
-        .and_then(Value::as_f64)
-        .map(|value| value as f32)
-        .unwrap_or(default)
+fn read_advanced_ui_scale(path: &Path) -> Option<UiScale> {
+    let json = read_json::<Value>(path).ok()?;
+    match json.get("ui_scale").and_then(Value::as_str) {
+        Some("100%") => Some(UiScale::Scale100),
+        Some("90%") => Some(UiScale::Scale90),
+        _ => None,
+    }
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {

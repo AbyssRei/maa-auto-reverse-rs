@@ -48,6 +48,7 @@ impl Display for RuntimeMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub controller: ControllerKind,
     pub selected_window_title: String,
@@ -67,6 +68,7 @@ impl Default for AppSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StrategyConfig {
     pub item_list: Vec<String>,
     pub operator_list: Vec<String>,
@@ -80,7 +82,11 @@ pub struct StrategyConfig {
     pub post_action_refresh_wait: f32,
     pub sell_click_wait: f32,
     pub refresh_keep_mode: bool,
+    pub auto_reverse_auto_refresh: bool,
     pub ui_scale: UiScale,
+    pub double_click_interval: f32,
+    pub stable_poll_interval: f32,
+    pub action_interval: f32,
 }
 
 impl Default for StrategyConfig {
@@ -95,30 +101,37 @@ impl Default for StrategyConfig {
                 ("湖".to_string(), "溯".to_string()),
             ]),
             change_threshold: 5.0,
-            shop_refresh_change_threshold: 15.0,
+            shop_refresh_change_threshold: 8.0,
             stable_threshold: 2.0,
             stable_timeout: 2.0,
             post_action_refresh_wait: 0.4,
             sell_click_wait: 0.03,
             refresh_keep_mode: false,
+            auto_reverse_auto_refresh: false,
             ui_scale: UiScale::Scale90,
+            double_click_interval: 0.01,
+            stable_poll_interval: 0.1,
+            action_interval: 0.1,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PresetEntry {
     pub label: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PresetCatalog {
     pub predefined_items: Vec<PresetEntry>,
     pub predefined_buy_only_operators: Vec<PresetEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PersistedState {
     pub app_settings: AppSettings,
     pub strategy_config: StrategyConfig,
@@ -161,4 +174,17 @@ pub fn parse_name_list(text: &str) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_name_list_with_multiple_delimiters() {
+        assert_eq!(
+            parse_name_list("德克萨斯， 宴; Sharp、\n锏"),
+            vec!["德克萨斯", "宴", "Sharp", "锏"]
+        );
+    }
 }

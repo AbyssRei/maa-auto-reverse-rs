@@ -1,0 +1,85 @@
+name: Build Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release
+
+      - name: Prepare package metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $appName = "maa-auto-reverse-rs"
+          if ("${{ github.event_name }}" -eq "push") {
+            $version = "${{ github.ref_name }}"
+          } else {
+            $version = "manual-${{ github.run_number }}"
+          }
+          $packageName = "$appName-$version-windows-x64"
+          $packageDir = Join-Path $env:RUNNER_TEMP $packageName
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          "app_name=$appName" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "package_name=$packageName" >> $env:GITHUB_OUTPUT
+          "package_dir=$packageDir" >> $env:GITHUB_OUTPUT
+          "archive_path=$env:RUNNER_TEMP\$packageName.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Assemble package contents
+        shell: pwsh
+        run: |
+          $packageDir = "${{ steps.meta.outputs.package_dir }}"
+          Copy-Item "target\release\maa-auto-reverse-rs.exe" -Destination $packageDir -Force
+          Copy-Item "config" -Destination (Join-Path $packageDir "config") -Recurse -Force
+          Copy-Item "data" -Destination (Join-Path $packageDir "data") -Recurse -Force
+          Copy-Item "resource" -Destination (Join-Path $packageDir "resource") -Recurse -Force
+          Copy-Item "runtime" -Destination (Join-Path $packageDir "runtime") -Recurse -Force
+
+      - name: Create zip archive
+        shell: pwsh
+        run: |
+          $packageDir = "${{ steps.meta.outputs.package_dir }}"
+          $archivePath = "${{ steps.meta.outputs.archive_path }}"
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
+          }
+          Compress-Archive -Path $packageDir -DestinationPath $archivePath -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.package_name }}
+          path: ${{ steps.meta.outputs.archive_path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: ${{ steps.meta.outputs.archive_path }}

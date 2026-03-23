@@ -1,6 +1,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use window_enumerator::WindowEnumerator;
+
+#[cfg(windows)]
+use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -25,14 +31,16 @@ impl WindowInfo {
 pub fn list_windows() -> Result<Vec<WindowInfo>> {
     let mut enumerator = WindowEnumerator::new();
     enumerator.enumerate_all_windows()?;
+    let mut seen_titles = HashSet::new();
 
     let mut windows = enumerator
         .get_windows()
         .iter()
         .filter(|window| {
-            !window.title.trim().is_empty()
-                && window.position.width > 0
-                && window.position.height > 0
+            let title = window.title.trim();
+            !title.is_empty()
+                && is_window_candidate(window.hwnd, window.position.width, window.position.height)
+                && seen_titles.insert(title.to_string())
         })
         .map(|window| WindowInfo {
             hwnd: window.hwnd,
@@ -63,4 +71,25 @@ pub fn find_window_hwnd(title: &str) -> Result<Option<isize>> {
         .into_iter()
         .find(|window| window.title.contains(title))
         .map(|window| window.hwnd))
+}
+
+#[cfg(windows)]
+fn is_window_candidate(hwnd: isize, width: i32, height: i32) -> bool {
+    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    if hwnd.0.is_null() {
+        return false;
+    }
+
+    let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+    if !visible {
+        return false;
+    }
+
+    let minimized = unsafe { IsIconic(hwnd).as_bool() };
+    minimized || (width > 0 && height > 0)
+}
+
+#[cfg(not(windows))]
+fn is_window_candidate(_hwnd: isize, width: i32, height: i32) -> bool {
+    width > 0 && height > 0
 }

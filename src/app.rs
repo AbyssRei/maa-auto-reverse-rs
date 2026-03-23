@@ -96,6 +96,7 @@ enum Message {
     Tick,
     ListsEdited(ListField, text_editor::Action),
     TogglePreset(PresetKind, String, bool),
+    ToggleAutoRefresh(bool),
     SetScale(UiScale),
     WindowResized(Size),
     SaveImage(ImageSaveTarget),
@@ -360,6 +361,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             sync_strategy_from_editors(app);
             Task::none()
         }
+        Message::ToggleAutoRefresh(enabled) => {
+            app.state.strategy_config.auto_reverse_auto_refresh = enabled;
+            sync_strategy_from_editors(app);
+            Task::none()
+        }
         Message::SetScale(value) => {
             app.state.app_settings.ui_scale = value;
             app.state.strategy_config.ui_scale = app.state.app_settings.ui_scale;
@@ -441,6 +447,9 @@ fn view(app: &App) -> Element<'_, Message> {
                 None
             }
         ),
+        checkbox(app.state.strategy_config.auto_reverse_auto_refresh)
+            .label("倒转自动刷新")
+            .on_toggle(Message::ToggleAutoRefresh),
     ]
     .spacing(12);
 

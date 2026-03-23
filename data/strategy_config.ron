@@ -81,5 +81,9 @@
     post_action_refresh_wait: 0.4,
     sell_click_wait: 0.03,
     refresh_keep_mode: false,
+    auto_reverse_auto_refresh: false,
     ui_scale: Scale100,
+    double_click_interval: 0.01,
+    stable_poll_interval: 0.1,
+    action_interval: 0.1,
 )

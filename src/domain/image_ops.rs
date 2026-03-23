@@ -80,7 +80,7 @@ pub const ROI_90: RoiTemplateSet = RoiTemplateSet {
         (0.2052, 0.9556, 0.0818, 0.0250),
     ],
     max_card_roi: (0.3625, 0.7037, 0.2740, 0.0435),
-    hand_area_roi: (0.1250, 0.6324, 0.6594, 0.1046),
+    hand_area_roi: (0.1234, 0.5907, 0.6599, 0.1102),
     shop_display_roi: (0.1901, 0.7685, 0.6844, 0.2204),
 };
 
@@ -103,7 +103,7 @@ pub const ROI_100: RoiTemplateSet = RoiTemplateSet {
         (0.1172, 0.9500, 0.0896, 0.0296),
     ],
     max_card_roi: (0.3460, 0.6687, 0.3073, 0.0514),
-    hand_area_roi: (0.1250, 0.6324, 0.6594, 0.1046),
+    hand_area_roi: (0.1240, 0.5824, 0.6594, 0.0889),
     shop_display_roi: (0.0995, 0.7435, 0.7599, 0.2444),
 };
 
@@ -729,26 +729,26 @@ fn draw_digit(image: &mut RgbaImage, x: i32, y: i32, digit: usize, color: Rgba<u
 }
 
 pub fn preprocess_roi(image: &DynamicImage, is_number: bool) -> DynamicImage {
-    let mut gray = image.to_luma8();
+    let gray = image.to_luma8();
     let scale = if is_number { 3.0 } else { 2.0 };
-    gray = resize(
+    let resized = resize(
         &gray,
         (gray.width() as f32 * scale) as u32,
         (gray.height() as f32 * scale) as u32,
         FilterType::CatmullRom,
     );
-
-    if mean_gray(&gray) < 100.0 {
-        for pixel in gray.pixels_mut() {
-            pixel.0[0] = 255 - pixel.0[0];
-        }
-    }
+    let mut processed = resized;
 
     if is_number {
-        gray = threshold(&gray, 150, ThresholdType::Binary);
+        if border_mean_gray(&processed) < 100.0 {
+            invert_gray_in_place(&mut processed);
+        }
+        processed = threshold(&processed, 150, ThresholdType::Binary);
+    } else if mean_gray(&processed) < 100.0 {
+        invert_gray_in_place(&mut processed);
     }
 
-    let bordered = add_white_border(&gray, 10);
+    let bordered = add_white_border(&processed, 10);
     DynamicImage::ImageRgb8(DynamicImage::ImageLuma8(bordered).to_rgb8())
 }
 
@@ -765,6 +765,47 @@ pub fn add_white_border(image: &GrayImage, border: u32) -> GrayImage {
     );
     image::imageops::replace(&mut out, image, border as i64, border as i64);
     out
+}
+
+fn invert_gray_in_place(image: &mut GrayImage) {
+    for pixel in image.pixels_mut() {
+        pixel.0[0] = 255 - pixel.0[0];
+    }
+}
+
+fn border_mean_gray(image: &GrayImage) -> f32 {
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return 0.0;
+    }
+
+    let mut sum = 0u64;
+    let mut count = 0u64;
+
+    for x in 0..width {
+        sum += image.get_pixel(x, 0).0[0] as u64;
+        count += 1;
+        if height > 1 {
+            sum += image.get_pixel(x, height - 1).0[0] as u64;
+            count += 1;
+        }
+    }
+
+    if width > 1 && height > 2 {
+        for y in 1..(height - 1) {
+            sum += image.get_pixel(0, y).0[0] as u64;
+            count += 1;
+            sum += image.get_pixel(width - 1, y).0[0] as u64;
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        0.0
+    } else {
+        sum as f32 / count as f32
+    }
 }
 
 pub fn has_image_changed(before: &DynamicImage, after: &DynamicImage, threshold: f32) -> bool {
@@ -795,8 +836,8 @@ pub fn rgba_to_ndarray(image: &RgbaImage) -> Array3<f32> {
 }
 
 pub fn find_hand_change_center(before: &DynamicImage, after: &DynamicImage) -> Option<f32> {
-    let before = before.to_rgba8();
-    let after = after.to_rgba8();
+    let before = before.to_rgb8();
+    let after = after.to_rgb8();
 
     if before.dimensions() != after.dimensions() {
         return None;
@@ -810,7 +851,7 @@ pub fn find_hand_change_center(before: &DynamicImage, after: &DynamicImage) -> O
 
     let slots = 10;
     let slot_width = width as f32 / slots as f32;
-    let mut best_score = 0usize;
+    let mut best_score = 0.0f32;
     let mut best_idx = None;
 
     for slot in 0..slots {
@@ -821,21 +862,20 @@ pub fn find_hand_change_center(before: &DynamicImage, after: &DynamicImage) -> O
             ((slot as f32 + 1.0) * slot_width) as usize
         };
 
-        let mut score = 0usize;
-        for y in 0..height {
-            for x in start..end {
-                let a = before.get_pixel(x as u32, y as u32);
-                let b = after.get_pixel(x as u32, y as u32);
-                let delta =
-                    a.0.iter()
-                        .zip(b.0.iter())
-                        .map(|(lhs, rhs)| lhs.abs_diff(*rhs) as usize)
-                        .sum::<usize>();
-                if delta > 60 {
-                    score += 1;
-                }
-            }
-        }
+        let (before_mean, before_std) = mean_std_rgb_region(&before, start, end, height);
+        let (after_mean, after_std) = mean_std_rgb_region(&after, start, end, height);
+
+        let mean_diff = before_mean
+            .iter()
+            .zip(after_mean.iter())
+            .map(|(lhs, rhs)| (rhs - lhs).abs())
+            .sum::<f32>();
+        let std_diff = before_std
+            .iter()
+            .zip(after_std.iter())
+            .map(|(lhs, rhs)| (rhs - lhs).abs())
+            .sum::<f32>();
+        let score = mean_diff + std_diff;
 
         if score > best_score {
             best_score = score;
@@ -843,7 +883,7 @@ pub fn find_hand_change_center(before: &DynamicImage, after: &DynamicImage) -> O
         }
     }
 
-    if best_score <= 50 {
+    if best_score <= 5.0 {
         return None;
     }
 
@@ -856,4 +896,44 @@ pub fn find_hand_change_center(before: &DynamicImage, after: &DynamicImage) -> O
         };
         start + (end - start) / 2.0
     })
+}
+
+fn mean_std_rgb_region(
+    image: &image::RgbImage,
+    start_x: usize,
+    end_x: usize,
+    height: usize,
+) -> ([f32; 3], [f32; 3]) {
+    let count = ((end_x.saturating_sub(start_x)) * height).max(1) as f32;
+    let mut sum = [0.0f32; 3];
+
+    for y in 0..height {
+        for x in start_x..end_x {
+            let pixel = image.get_pixel(x as u32, y as u32);
+            for (channel, value) in pixel.0.iter().enumerate().take(3) {
+                sum[channel] += *value as f32;
+            }
+        }
+    }
+
+    let mean = [sum[0] / count, sum[1] / count, sum[2] / count];
+    let mut variance_sum = [0.0f32; 3];
+
+    for y in 0..height {
+        for x in start_x..end_x {
+            let pixel = image.get_pixel(x as u32, y as u32);
+            for (channel, value) in pixel.0.iter().enumerate().take(3) {
+                let delta = *value as f32 - mean[channel];
+                variance_sum[channel] += delta * delta;
+            }
+        }
+    }
+
+    let std = [
+        (variance_sum[0] / count).sqrt(),
+        (variance_sum[1] / count).sqrt(),
+        (variance_sum[2] / count).sqrt(),
+    ];
+
+    (mean, std)
 }
