@@ -11,6 +11,7 @@ use iced::widget::{
     button, checkbox, column, container, image as image_view, pick_list, radio, row, scrollable,
     text, text_editor as text_editor_widget,
 };
+use iced::window::icon;
 use iced::{
     Alignment, Element, Length, Size, Subscription, Task, Theme, application, time, window,
 };
@@ -22,6 +23,10 @@ pub fn run_gui() -> iced::Result {
     application(initialize, update, view)
         .title(app_title)
         .theme(app_theme)
+        .window(window::Settings {
+            icon: load_window_icon(),
+            ..window::Settings::default()
+        })
         .subscription(subscription)
         .run()
 }
@@ -133,7 +138,7 @@ struct ScanPayload {
 }
 
 fn app_title(_app: &App) -> String {
-    "卫戍协议-倒转小助手 (Rust)".to_string()
+    "卫戍协议-倒转小助手".to_string()
 }
 
 fn app_theme(_app: &App) -> Theme {
@@ -953,4 +958,10 @@ fn save_preview_with_dialog(preview: ImagePreview, filename: String) -> anyhow::
     image.save(&path)?;
 
     Ok(path.display().to_string())
+}
+
+fn load_window_icon() -> Option<window::Icon> {
+    static ICON_BYTES: &[u8] = include_bytes!("../logo.png");
+
+    icon::from_file_data(ICON_BYTES, Some(image::ImageFormat::Png)).ok()
 }
